@@ -7,6 +7,62 @@ import torch.nn as nn
 import torch
 import tqdm
 import matplotlib.pyplot as plt
+import numpy as np
+from PIL import Image
+
+class UNet(nn.Module):
+    def __init__(self):
+        super(UNet, self).__init__()
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(1, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.ReLU()
+        )
+        self.conv2 = nn.Sequential(
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(128, 128, 3, padding=1),
+            nn.ReLU()
+        )
+        self.conv3 = nn.Sequential(
+            nn.MaxPool2d(2),
+            nn.Conv2d(128, 256, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(256, 256, 3, padding=1),
+            nn.ReLU()
+        )
+        self.upconv3 = nn.Sequential(
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(256, 128, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(128, 128, 3, padding=1),
+            nn.ReLU()
+        )
+        self.upconv2 = nn.Sequential(
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(128, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.ReLU()
+        )
+        self.conv = nn.Conv2d(32, 1, 3, padding=1)
+        self.sigmoid = nn.Sigmoid()
+        self.dropout = nn.Dropout2d(0.2)
+    
+    def forward(self, x):
+        x1 = self.conv1(x)
+        x2 = self.conv2(x1)
+        x3 = self.conv3(x2)
+
+        x = self.upconv3(x3)
+        x = self.upconv2(x + self.dropout(x2))
+        x = x + self.dropout(x3)
+        x = self.conv(x)
+        x = self.sigmoid(x)
+        return x
+    
 
 def model_autoencoder():
     
@@ -79,7 +135,7 @@ if __name__ == "__main__":
     val_lodaer = DataLoader(dataset=dataset_val,batch_size=32,shuffle=False,num_workers=2)
 
     # model
-    model = model_autoencoder()
+    model = UNet()
     model.to(device)
     # loss function
     criterion = nn.MSELoss()
@@ -123,3 +179,7 @@ if __name__ == "__main__":
                 plt.show()
             
             break
+
+    # load example.png
+        
+ 
