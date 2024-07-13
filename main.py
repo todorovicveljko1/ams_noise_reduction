@@ -1,113 +1,37 @@
 
+import datetime
 from data_loader import CustomDataset
+from models import UNet, UNetConfig
 from noise_gen import GaussianNoiseGen, CompositeNoise, PepperSaltNoiseGen, PoissonNoiseGen
-from torchvision import transforms
+from torchvision.transforms import v2
 from torch.utils.data import DataLoader
 import torch.nn as nn
 import torch
-import tqdm
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 
-class UNet(nn.Module):
-    def __init__(self):
-        super(UNet, self).__init__()
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(1, 64, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, 3, padding=1),
-            nn.ReLU()
-        )
-        self.conv2 = nn.Sequential(
-            nn.MaxPool2d(2),
-            nn.Conv2d(64, 128, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(128, 128, 3, padding=1),
-            nn.ReLU()
-        )
-        self.conv3 = nn.Sequential(
-            nn.MaxPool2d(2),
-            nn.Conv2d(128, 256, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(256, 256, 3, padding=1),
-            nn.ReLU()
-        )
-        self.upconv3 = nn.Sequential(
-            nn.Upsample(scale_factor=2),
-            nn.Conv2d(256, 128, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(128, 128, 3, padding=1),
-            nn.ReLU()
-        )
-        self.upconv2 = nn.Sequential(
-            nn.Upsample(scale_factor=2),
-            nn.Conv2d(128, 64, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, 3, padding=1),
-            nn.ReLU()
-        )
-        self.conv = nn.Conv2d(32, 1, 3, padding=1)
-        self.sigmoid = nn.Sigmoid()
-        self.dropout = nn.Dropout2d(0.2)
-    
-    def forward(self, x):
-        x1 = self.conv1(x)
-        x2 = self.conv2(x1)
-        x3 = self.conv3(x2)
 
-        x = self.upconv3(x3)
-        x = self.upconv2(x + self.dropout(x2))
-        x = x + self.dropout(x3)
-        x = self.conv(x)
-        x = self.sigmoid(x)
-        return x
-    
-
-def model_autoencoder():
-    
-    model = nn.Sequential(
-        nn.Conv2d(1, 32, 3, padding=1),
-        nn.ReLU(),
-        nn.Conv2d(32, 64, 3, padding=1),
-        nn.BatchNorm2d(64),
-        nn.ReLU(),
-        nn.MaxPool2d(2),
-        nn.Conv2d(64, 128, 3, padding=1),
-        nn.BatchNorm2d(128),
-        nn.ReLU(),
-        nn.MaxPool2d(2),
-        nn.Conv2d(128, 256, 3, padding=1),
-        nn.BatchNorm2d(256),
-        nn.ReLU(),
-        nn.Dropout2d(0.2),
-        nn.Conv2d(256, 128, 3, padding=1),
-        nn.BatchNorm2d(128),
-        nn.ReLU(),
-        nn.Upsample(scale_factor=2),
-        nn.Conv2d(128, 64, 3, padding=1),
-        nn.BatchNorm2d(64),
-        nn.ReLU(),
-        nn.Upsample(scale_factor=2),
-        nn.Conv2d(64, 32, 3, padding=1),
-        nn.BatchNorm2d(32),
-        nn.ReLU(),
-        nn.Conv2d(32, 1, 3, padding=1),
-        nn.Sigmoid()
-    )
-    return model
-
-def train_iter(model, train_loader, criterion, optimizer):
+def train_iter(model, train_loader, criterion, optimizer, debug=False):
     model.train()
     train_loss = 0.0
-    for i, (img, noisy_img, noise) in enumerate(tqdm.tqdm(train_loader)):
+    t = tqdm(train_loader)
+    losses = []
+    for i, (img, noisy_img, noise) in enumerate(t):
         optimizer.zero_grad()
         output = model(noisy_img)
+        # print(output.shape)
         loss = criterion(output, img)
         loss.backward()
         optimizer.step()
         train_loss += loss.item()
-    return train_loss / len(train_loader)
+        if i % 10 == 0:
+            losses.append(loss.item())
+            if debug:
+                t.write(f" loss {loss.item():.6f} at iter: {i:4d}")
+    return train_loss / len(train_loader), losses
+
 
 def validate_iter(model, val_loader, criterion):
     model.eval()
@@ -119,67 +43,48 @@ def validate_iter(model, val_loader, criterion):
             val_loss += loss.item()
     return val_loss / len(val_loader)
 
+
 if __name__ == "__main__":
+    # PARAMS
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    noise_gen = CompositeNoise()
-    noise_gen.add(GaussianNoiseGen(0, 0.2), 0, 0.3, 1, 1, -100, 255)
-    noise_gen.add(PoissonNoiseGen(2), 0, 0.1, 1, 0.3, -100, 255)
-    noise_gen.add(PepperSaltNoiseGen(0.001), 0, 0.5, 1, 1, 0, 255)
+    batch_size = 32
+    # NOISE GEN
+    noise_gen = CompositeNoise(scale=0.1, value_prob=0.5)
+    noise_gen.add(GaussianNoiseGen(0, 0.2), scale=0.5, min_clip=-1.0)
+    noise_gen.add(PoissonNoiseGen(2), scale=0.1)
+    noise_gen.add(PepperSaltNoiseGen(0.005), scale=0.5)
 
-    
-    trans = transforms.Compose([transforms.ToTensor()])
-    dataset = CustomDataset('data\\dataset\\train', noise_gen, trans, device)
-    dataset_val = CustomDataset('data\\dataset\\val', noise_gen, trans, device)
+    trans = v2.Compose([v2.ToTensor()])  # , v2.RandomRotation(5)])
+    trans_test = v2.Compose([v2.ToTensor()])
+    dataset = CustomDataset('data/dataset/train', noise_gen, trans, device)
+    dataset_val = CustomDataset('data/dataset/val', noise_gen, trans, device)
+    dataset_test = CustomDataset('data/dataset/test', noise_gen, trans_test, device)
     # data set loader
-    train_loader = DataLoader(dataset=dataset,batch_size=32,shuffle=True,num_workers=2)
-    val_lodaer = DataLoader(dataset=dataset_val,batch_size=32,shuffle=False,num_workers=2)
-
+    train_loader = DataLoader(dataset=dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    val_lodaer = DataLoader(dataset=dataset_val, batch_size=batch_size, shuffle=True, num_workers=0)
+    test_lodaer = DataLoader(dataset=dataset_test, batch_size=batch_size, num_workers=0)
     # model
-    model = UNet()
+    cfg = UNetConfig([1, 32, 64, 128], 0.)  # Best [1, 32, 64, 128], 0.
+    model = UNet(cfg)
+    # model = AutoEncoder(input_channels=1, base_channels=24, layers=3)
     model.to(device)
+    # model.compile()
     # loss function
-    criterion = nn.MSELoss()
+    criterion = nn.L1Loss()
     # optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.00003)
     # number of params
-    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f'Number of parameters: {num_params}')
     # train
-    epochs = 1
+    epochs = 4
     for epoch in range(epochs):
-        train_loss = train_iter(model, train_loader, criterion, optimizer)
+        train_loss, losses = train_iter(
+            model, train_loader, criterion, optimizer, debug=True)
         print(f'Epoch {epoch+1}/{epochs} train loss: {train_loss}')
         val_loss = validate_iter(model, val_lodaer, criterion)
         print(f'Epoch {epoch+1}/{epochs} val loss: {val_loss}')
-
+    current_datetime = datetime.datetime.now()
+    filename = current_datetime.strftime("file_%Y%m%d_%H%M%S.txt")
     # save model
-    torch.save(model.state_dict(), 'model.pth')
-
-    
-    # visualize 8 examples
-    model.eval()
-    with torch.no_grad():
-        for i, (img, noisy_img, noise) in enumerate(tqdm.tqdm(val_lodaer)):
-            
-            output = model(noisy_img)
-            img = img.cpu().numpy()
-            noisy_img = noisy_img.cpu().numpy()
-            output = output.cpu().numpy()
-            noise = noise.cpu().numpy()
-            for j in range(8):
-                fig, axs = plt.subplots(1, 4, figsize=(20, 20))
-                axs[0].imshow(img[j, 0, :, :], cmap='gray')
-                axs[0].set_title('Original')
-                axs[1].imshow(noisy_img[j, 0, :, :], cmap='gray')
-                axs[1].set_title('Noisy')
-                axs[2].imshow(output[j, 0, :, :], cmap='gray')
-                axs[2].set_title('Denoised')
-                axs[3].imshow(noise[j, :, :], cmap='gray')
-                axs[3].set_title('Noise')
-                plt.show()
-            
-            break
+    torch.save(model.state_dict(), f'models/{filename}.pth')
 
     # load example.png
-        
- 

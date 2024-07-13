@@ -3,4 +3,6 @@ env
 __pycache__
 **/__pycache__
 temp/*
-models/*
+*.png
+*.html
+!example.png
