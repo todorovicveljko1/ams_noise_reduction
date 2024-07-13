@@ -4,7 +4,8 @@ import numpy as np
 import os
 import random
 from PIL import Image
-import torchvision.transforms as transforms
+from torchvision.transforms import v2
+
 
 
 class CustomDataset(data.Dataset):
@@ -29,17 +30,22 @@ class CustomDataset(data.Dataset):
         :param index: index of image
         :return: image, noisy image, noise mask
         """
-        img = Image.open(self.imgs[index])
-        if self.transform is not None:
-            img = self.transform(img)
+        img = np.array(Image.open(self.imgs[index]), np.float32)
         img = (img - img.min()) / (img.max() - img.min())
-        noise = self.noise_gen.noise(img.shape[1], img.shape[2])
+        x,y = img.shape[0], img.shape[1]
+        noise = self.noise_gen.noise(x,y)
         noisy_img = img + noise
-        noisy_img = torch.clamp(noisy_img, 0.0, 1.0)
-
+        if self.transform is not None:
+            img, noisy_img, noise = self.transform(img, noisy_img, noise)
+            #noisy_img = self.transform(noisy_img) #???
+           # noise = self.transform(noise)
         # to device
         img = img.to(self.device)
+
+        # mask = torch.bernoulli(torch.full((x,y), 0.5)) # 50% -> 0 or 1
+        # noisy_img = noisy_img*mask
         noisy_img = noisy_img.to(self.device)
+
         noise = noise.to(self.device)
 
         return img, noisy_img, noise
@@ -50,13 +56,13 @@ class CustomDataset(data.Dataset):
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
     from noise_gen import GaussianNoiseGen, CompositeNoise, PepperSaltNoiseGen, PoissonNoiseGen
-    from torchvision import transforms
-    noise_gen = CompositeNoise()
-    noise_gen.add(GaussianNoiseGen(0, 0.2), 0, 0.3, 1, 1, -100, 255)
-    noise_gen.add(PoissonNoiseGen(2), 0, 0.1, 1, 0.3, -100, 255)
-    noise_gen.add(PepperSaltNoiseGen(0.001), 0, 0.5, 1, 1, 0, 255)
+
+    noise_gen = CompositeNoise(scale=0.1, value_prob=0.5)
+    noise_gen.add(GaussianNoiseGen(0, 0.2), scale=0.5, min_clip=-1.0)
+    noise_gen.add(PoissonNoiseGen(2), scale = 0.1)
+    noise_gen.add(PepperSaltNoiseGen(0.005), scale = 0.5)
     # scale to [0, 1]
-    trans = transforms.Compose([transforms.ToTensor()])
+    trans = v2.Compose([v2.ToTensor()])
     dataset = CustomDataset('data\\dataset\\train', noise_gen, trans)
     img, noisy_img, noise = dataset[0]
     # show img, noise and noise mask next to each other
@@ -64,7 +70,7 @@ if __name__ == '__main__':
     plt.subplot(1,3,1)
     plt.imshow(img.numpy().transpose(1,2,0))
     plt.subplot(1,3,2)
-    plt.imshow(noise.numpy())
+    plt.imshow(noise.numpy().transpose(1,2,0))
     plt.subplot(1,3,3)
     plt.imshow(noisy_img.numpy().transpose(1,2,0))
     plt.show()
